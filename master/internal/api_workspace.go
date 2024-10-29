@@ -22,6 +22,7 @@ import (
 	"github.com/determined-ai/determined/master/internal/api"
 	"github.com/determined-ai/determined/master/internal/authz"
 	"github.com/determined-ai/determined/master/internal/command"
+	"github.com/determined-ai/determined/master/internal/configpolicy"
 	"github.com/determined-ai/determined/master/internal/db"
 	"github.com/determined-ai/determined/master/internal/grpcutil"
 
@@ -30,6 +31,7 @@ import (
 	"github.com/determined-ai/determined/master/internal/templates"
 	"github.com/determined-ai/determined/master/internal/workspace"
 	"github.com/determined-ai/determined/master/pkg/model"
+	"github.com/determined-ai/determined/master/pkg/ptrs"
 	"github.com/determined-ai/determined/master/pkg/schemas"
 	"github.com/determined-ai/determined/master/pkg/schemas/expconf"
 	"github.com/determined-ai/determined/master/pkg/set"
@@ -774,6 +776,23 @@ func (a *apiServer) PatchWorkspace(
 			if err = updatedWorkspace.CheckpointStorageConfig.UnmarshalJSON(bytes); err != nil {
 				return nil, err
 			}
+
+			// Check that no fields of the patched checkpoint storage config overlap with fields set
+			// in an invariant config policy.
+			enforcedChkptStorage, err := configpolicy.GetConfigPolicyField[expconf.CheckpointStorageConfig](
+				ctx, ptrs.Ptr(int(currWorkspace.Id)), "invariant_config", "'checkpoint_storage'",
+				model.ExperimentType)
+			if err != nil {
+				return nil, status.Errorf(codes.Internal, err.Error())
+			}
+			if enforcedChkptStorage != nil && updatedWorkspace.CheckpointStorageConfig != nil {
+				err := configpolicy.CheckpointStorageOverlap(*enforcedChkptStorage,
+					*updatedWorkspace.CheckpointStorageConfig)
+				if err != nil {
+					return nil, status.Errorf(codes.InvalidArgument, err.Error())
+				}
+			}
+
 			if err = schemas.IsComplete(updatedWorkspace.CheckpointStorageConfig); err != nil {
 				return nil, status.Errorf(codes.InvalidArgument, err.Error())
 			}

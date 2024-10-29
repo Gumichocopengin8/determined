@@ -705,3 +705,81 @@ func TestCanSetMaxSlots(t *testing.T) {
 		require.Equal(t, 20, *slots)
 	})
 }
+
+func TestFieldsOverlap(t *testing.T) {
+	// Two objects that have the same field of type str, int, map, slice, pointer wrapping a random
+	// strunct (which would be one of our main use cases)
+}
+
+func TestCheckpointStorageOverlap(t *testing.T) {
+	t.Run("same storage type different host path", func(t *testing.T) {
+		conf1 := expconf.CheckpointStorageConfigV0{
+			RawSharedFSConfig: &expconf.SharedFSConfigV0{
+				RawHostPath:       ptrs.Ptr("/tmp"),
+				RawCheckpointPath: ptrs.Ptr("/tmp"),
+			},
+		}
+		conf2 := expconf.CheckpointStorageConfigV0{
+			RawSharedFSConfig: &expconf.SharedFSConfigV0{
+				RawHostPath:      ptrs.Ptr("/etc"),
+				RawContainerPath: ptrs.Ptr("/tmp"),
+			}}
+		err := CheckpointStorageOverlap(conf1, conf2)
+		require.Error(t, err)
+	})
+	t.Run("different storage type", func(t *testing.T) {
+		conf1 := expconf.CheckpointStorageConfigV0{
+			RawSharedFSConfig: &expconf.SharedFSConfigV0{
+				RawHostPath:       ptrs.Ptr("/tmp"),
+				RawCheckpointPath: ptrs.Ptr("/tmp"),
+			},
+		}
+		conf2 := expconf.CheckpointStorageConfigV0{
+			RawGCSConfig: &expconf.GCSConfigV0{
+				RawBucket: ptrs.Ptr("gcs_bucket"),
+			}}
+		err := CheckpointStorageOverlap(conf1, conf2)
+		require.Error(t, err)
+	})
+	t.Run("one config empty", func(t *testing.T) {
+		conf1 := expconf.CheckpointStorageConfigV0{
+			RawSharedFSConfig: &expconf.SharedFSConfigV0{
+				RawHostPath:       ptrs.Ptr("/tmp"),
+				RawCheckpointPath: ptrs.Ptr("/tmp"),
+			},
+		}
+		err := CheckpointStorageOverlap(conf1, expconf.CheckpointStorageConfigV0{})
+		require.Error(t, err)
+	})
+
+	t.Run("one config partially empty", func(t *testing.T) {
+		conf1 := expconf.CheckpointStorageConfigV0{
+			RawSharedFSConfig: &expconf.SharedFSConfigV0{
+				RawHostPath:       ptrs.Ptr("/tmp"),
+				RawCheckpointPath: ptrs.Ptr("/tmp"),
+			},
+		}
+		conf2 := expconf.CheckpointStorageConfigV0{
+			RawSharedFSConfig: &expconf.SharedFSConfigV0{
+				RawHostPath: ptrs.Ptr("/tmp"),
+			}}
+		err := CheckpointStorageOverlap(conf1, conf2)
+		require.NoError(t, err)
+	})
+
+	t.Run("configs match", func(t *testing.T) {
+		conf1 := expconf.CheckpointStorageConfigV0{
+			RawSharedFSConfig: &expconf.SharedFSConfigV0{
+				RawHostPath:       ptrs.Ptr("/tmp"),
+				RawCheckpointPath: ptrs.Ptr("/tmp"),
+			},
+		}
+		conf2 := expconf.CheckpointStorageConfigV0{
+			RawSharedFSConfig: &expconf.SharedFSConfigV0{
+				RawHostPath:      ptrs.Ptr("/etc"),
+				RawContainerPath: ptrs.Ptr("/tmp"),
+			}}
+		err := CheckpointStorageOverlap(conf1, conf2)
+		require.Error(t, err)
+	})
+}

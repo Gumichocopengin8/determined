@@ -261,18 +261,18 @@ func checkConstraintConflicts(constraints *model.Constraints, maxSlots, slots, p
 	return nil
 }
 
-// configPolicyOverlap compares two different configurations and warns the user when both
-// configurations define the same field.
+// configPolicyOverlap warns the user when config1 and config2 define different values the same
+// config policy field.
 func configPolicyOverlap(config1, config2 interface{}) {
-	if reflect.ValueOf(config1).Type() != reflect.ValueOf(config2).Type() &&
-		reflect.ValueOf(config1).Type() != reflect.ValueOf(&model.Constraints{}).Type() &&
-		reflect.ValueOf(config1).Type() != reflect.ValueOf(&model.CommandConfig{}).Type() &&
-		reflect.ValueOf(config1).Type() != reflect.ValueOf(&expconf.ExperimentConfig{}).Type() {
-		return
-	}
-
 	v1 := reflect.ValueOf(config1)
 	v2 := reflect.ValueOf(config2)
+
+	if v1.Type() != v2.Type() &&
+		v1.Type() != reflect.ValueOf(&model.Constraints{}).Type() &&
+		v1.Type() != reflect.ValueOf(&model.CommandConfig{}).Type() &&
+		v1.Type() != reflect.ValueOf(&expconf.ExperimentConfig{}).Type() {
+		return
+	}
 
 	// If the values are pointers, dereference them
 	if v1.Kind() == reflect.Ptr {
@@ -288,19 +288,52 @@ func configPolicyOverlap(config1, config2 interface{}) {
 		return
 	}
 
+	if overlap, fieldName := fieldsOverlap(v1, v2); overlap {
+		ConfigPolicyWarning(fmt.Sprintf("%s: field=%s", GlobalConfigConflictErr,
+			fieldName))
+	}
+}
+
+// fieldsOverlap compares two different configurations and returns true when both configurations
+// define different values for the same field. In this case, it also returns the name of the
+// conflicting field. Otherwise, returns false.
+func fieldsOverlap(v1, v2 reflect.Value) (bool, string) {
 	// Iterate over the fields in the struct
 	for i := 0; i < v1.NumField(); i++ {
 		field1 := v1.Field(i)
 		field2 := v2.Field(i)
 
-		if field1.IsValid() && field2.IsValid() && !field1.IsZero() && !field2.IsZero() {
-			// For non-pointer fields, compare directly if both are non-zero
-			if !reflect.DeepEqual(field1.Interface(), field2.Interface()) {
-				ConfigPolicyWarning(fmt.Sprintf("%s: field=%s", GlobalConfigConflictErr, v1.Type().Field(i).Name))
-				return
+		switch field1.Kind() {
+		case reflect.Ptr:
+			overlap, fieldName := fieldsOverlap(field1.Elem())
+			if overlap {
+				return overlap, fieldName
+			}
+		case reflect.Struct:
+			return fieldsOverlap(field1, field2)
+		default:
+			if field1.IsValid() && field2.IsValid() && !field1.IsZero() && !field2.IsZero() {
+				// For non-pointer fields, compare directly if both are non-zero
+				if !reflect.DeepEqual(field1.Interface(), field2.Interface()) {
+					return true, v1.Type().Field(i).Name
+				}
 			}
 		}
 	}
+	return false, ""
+}
+
+// CheckpointStorageOverlap returns an error when conf1 and conf2 define different values for the
+// same field of their respective checkpoint storage configuration. Otherwise, returns nil.
+func CheckpointStorageOverlap(conf1, conf2 expconf.CheckpointStorageConfig) error {
+	v1 := reflect.ValueOf(conf1)
+	v2 := reflect.ValueOf(conf2)
+
+	overlap, fieldName := fieldsOverlap(v1, v2)
+	if overlap {
+		return fmt.Errorf("checkpoint storage defines different values for field %s", fieldName)
+	}
+	return nil
 }
 
 // CanSetMaxSlots returns true if the slots requested don't violate a constraint. It returns the
