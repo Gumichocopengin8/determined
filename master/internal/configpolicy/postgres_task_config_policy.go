@@ -129,34 +129,32 @@ func GetConfigPolicyField[T any](ctx context.Context, wkspID *int, policyType, f
 
 	var confBytes []byte
 	var conf T
-	err := db.Bun().RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
-		var globalBytes []byte
-		err := tx.NewSelect().Table("task_config_policies").
-			ColumnExpr("? -> ?", bun.Safe(policyType), bun.Safe(field)).
-			Where("workspace_id IS NULL").
-			Where("workload_type = ?", workloadType).Scan(ctx, &globalBytes)
-		if err == nil && len(globalBytes) > 0 {
-			confBytes = globalBytes
-		}
-		if err != nil && err != sql.ErrNoRows {
-			return err
-		}
-
-		var wkspBytes []byte
-		err = tx.NewSelect().Table("task_config_policies").
-			ColumnExpr("? -> ?", bun.Safe(policyType), bun.Safe(field)).
-			Where("workspace_id = ?", wkspID).
-			Where("workload_type = ?", workloadType).Scan(ctx, &wkspBytes)
-		if err == nil && len(globalBytes) == 0 {
-			confBytes = wkspBytes
-		}
-		return err
-	})
-	if err == sql.ErrNoRows || len(confBytes) == 0 {
-		return nil, nil
+	var globalBytes []byte
+	err := db.Bun().NewSelect().Table("task_config_policies").
+		ColumnExpr("? -> ?", bun.Safe(policyType), bun.Safe(field)).
+		Where("workspace_id IS NULL").
+		Where("workload_type = ?", workloadType).Scan(ctx, &globalBytes)
+	if err == nil && len(globalBytes) > 0 {
+		confBytes = globalBytes
 	}
-	if err != nil {
+	if err != nil && err != sql.ErrNoRows {
+		return nil, err
+	}
+
+	var wkspBytes []byte
+	err = db.Bun().NewSelect().Table("task_config_policies").
+		ColumnExpr("? -> ?", bun.Safe(policyType), bun.Safe(field)).
+		Where("workspace_id = ?", wkspID).
+		Where("workload_type = ?", workloadType).Scan(ctx, &wkspBytes)
+	if err != nil && err != sql.ErrNoRows {
 		return nil, fmt.Errorf("error getting config field %s: %w", field, err)
+	}
+	if len(globalBytes) == 0 {
+		confBytes = wkspBytes
+	}
+	if err == sql.ErrNoRows || len(confBytes) == 0 {
+		// The field is not enforced as a config policy. Should not be an error.
+		return nil, nil
 	}
 
 	err = json.Unmarshal(confBytes, &conf)
