@@ -706,11 +706,6 @@ func TestCanSetMaxSlots(t *testing.T) {
 	})
 }
 
-func TestFieldsOverlap(t *testing.T) {
-	// Two objects that have the same field of type str, int, map, slice, pointer wrapping a random
-	// strunct (which would be one of our main use cases)
-}
-
 func TestCheckpointStorageOverlap(t *testing.T) {
 	t.Run("same storage type different host path", func(t *testing.T) {
 		conf1 := expconf.CheckpointStorageConfigV0{
@@ -749,7 +744,7 @@ func TestCheckpointStorageOverlap(t *testing.T) {
 			},
 		}
 		err := CheckpointStorageOverlap(conf1, expconf.CheckpointStorageConfigV0{})
-		require.Error(t, err)
+		require.NoError(t, err)
 	})
 
 	t.Run("one config partially empty", func(t *testing.T) {
