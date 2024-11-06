@@ -404,7 +404,7 @@ func readClientConfig(kubeconfigPath string) (*rest.Config, error) {
 		}
 		c.QPS = 100
 		c.Burst = 100
-		return rest.InClusterConfig()
+		return c, nil
 	}
 
 	if parts := strings.Split(kubeconfigPath, string(os.PathSeparator)); parts[0] == "~" {
@@ -1609,6 +1609,7 @@ type computeUsageSummary struct {
 
 // TODO(!!!): good func comment.
 func (j *jobsService) summarizeComputeUsage(poolName string) (*computeUsageSummary, error) {
+	fmt.Println("in summarize compute usage \n \n \n \n ")
 	summary, err := j.summarize()
 	if err != nil {
 		return nil, err
@@ -1745,6 +1746,7 @@ func (j *jobsService) getAgents() (*apiv1.GetAgentsResponse, error) {
 		j.getAgentsCacheTime = time.Now()
 
 		nodeSummaries := j.summarizeClusterByNodes()
+		fmt.Println("exited summarize cluster by nodes \n \n \n ")
 		_, nodesToPools := j.getNodeResourcePoolMapping(nodeSummaries)
 
 		j.getAgentsCache = &apiv1.GetAgentsResponse{}
@@ -1754,6 +1756,7 @@ func (j *jobsService) getAgents() (*apiv1.GetAgentsResponse, error) {
 		}
 	}
 
+	fmt.Println("almost done with get agents \n \n \n \n ")
 	// Ensure cached response is not inadvertently modified.
 	return rm.CopyGetAgentsResponse(j.getAgentsCache)
 }
@@ -1779,6 +1782,7 @@ const summarizeCacheDuration = 5 * time.Second
 // taints and tolerations to derive that info. This may be cached, so don't use this for decisions
 // that require up-to-date information.
 func (j *jobsService) summarize() (map[string]model.AgentSummary, error) {
+	fmt.Println("in summarize \n \n \n \n \n ")
 	j.summarizeCacheLock.Lock()
 	defer j.summarizeCacheLock.Unlock()
 
@@ -1867,6 +1871,7 @@ func (j *jobsService) getNodeResourcePoolMapping(nodeSummaries map[string]model.
 var programStartTime = time.Now()
 
 func (j *jobsService) computeSummary() (map[string]model.AgentSummary, error) {
+	fmt.Println("in compute summary \n \n \n \n ")
 	nodeSummaries := j.summarizeClusterByNodes()
 
 	// Build the many-to-many relationship between nodes and resource pools
@@ -1920,6 +1925,7 @@ func (j *jobsService) computeSummary() (map[string]model.AgentSummary, error) {
 }
 
 func (j *jobsService) summarizeClusterByNodes() map[string]model.AgentSummary {
+	fmt.Println("in summarize cluster by nodes \n \n \n \n ")
 	var allPods []podNodeInfo
 
 	for _, p := range j.jobNameToJobHandler {
@@ -1936,8 +1942,9 @@ func (j *jobsService) summarizeClusterByNodes() map[string]model.AgentSummary {
 		}
 		podByNode[podInfo.nodeName] = append(podByNode[podInfo.nodeName], podInfo)
 	}
-
+	fmt.Println("about to call get nonDet Slots \n \n \n ")
 	nodeToTasks, taskSlots := j.getNonDetSlots(j.slotType)
+	fmt.Println("exited get nondet slots \n \n \n \n ")
 	summary := make(map[string]model.AgentSummary, len(j.currentNodes))
 	for _, node := range j.currentNodes {
 		disabledLabel, isDisabled := node.Labels[clusterIDNodeLabel()]
@@ -2037,6 +2044,7 @@ func (j *jobsService) summarizeClusterByNodes() map[string]model.AgentSummary {
 		}
 	}
 
+	fmt.Println("we are returning from summarize cluster by nodes \n \n \n \n ")
 	return summary
 }
 
@@ -2066,8 +2074,9 @@ func (j *jobsService) getNonDetPods() ([]k8sV1.Pod, error) {
 func (j *jobsService) getNonDetSlots(deviceType device.Type) (map[string][]string, map[string]int64) {
 	nodeToTasks := make(map[string][]string, len(j.currentNodes))
 	taskSlots := make(map[string]int64)
-
+	fmt.Println("about to call get nondet pods \n \n \n ")
 	nonDetPods, err := j.getNonDetPods()
+	fmt.Println("finished get nondet pods \n \n \n \n ")
 	if err != nil {
 		j.syslog.WithError(err).Warn("getting non determined pods, " +
 			"this may cause slots to look free when they are in use")
@@ -2098,6 +2107,7 @@ func (j *jobsService) getNonDetSlots(deviceType device.Type) (map[string][]strin
 			taskSlots[pod.Name] = reqs
 		}
 	}
+	fmt.Println("finished get nondet slots \n \n \n \n ")
 	return nodeToTasks, taskSlots
 }
 
@@ -2181,11 +2191,15 @@ func (j *jobsService) listImportantPods(ctx context.Context, opts metaV1.ListOpt
 func (j *jobsService) listPodsInAllNamespaces(
 	ctx context.Context, opts metaV1.ListOptions,
 ) (*k8sV1.PodList, error) {
+	fmt.Println("WE ARE GOING TO LIST PODS IN ALL NAMESPACES \n \n \n ")
 	allPods, err := j.podInterfaces[""].List(ctx, opts)
+	fmt.Println("WE HAVE FINISHED CALL THE LIST FUNCTION \n \n \n ")
 	if err != nil {
 		if k8error.IsForbidden(err) {
+			fmt.Println("WE GO TO IS FORBIDDEN ERROR \n \n \n \n ")
 			return j.listImportantPods(ctx, opts)
 		}
+		fmt.Println("WE HAVE A DIFFERENT ERROR \n \n \n ")
 		return nil, err
 	}
 
@@ -2197,6 +2211,7 @@ func (j *jobsService) listPodsInAllNamespaces(
 		}
 	}
 
+	fmt.Println("finished list pods in all namespaces \n \n \n \n ")
 	allPods.Items, podsWeWant.Items = podsWeWant.Items, allPods.Items
 	return allPods, nil
 }
