@@ -29,6 +29,7 @@ import (
 	k8sClient "k8s.io/client-go/kubernetes"
 	typedBatchV1 "k8s.io/client-go/kubernetes/typed/batch/v1"
 	typedV1 "k8s.io/client-go/kubernetes/typed/core/v1"
+	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
@@ -52,9 +53,6 @@ import (
 	"github.com/determined-ai/determined/master/pkg/syncx/waitgroupx"
 	"github.com/determined-ai/determined/master/pkg/tasks"
 	"github.com/determined-ai/determined/proto/pkg/apiv1"
-
-	// Used to load all auth plugins.
-	_ "k8s.io/client-go/plugin/pkg/client/auth"
 )
 
 const (
@@ -351,6 +349,7 @@ func (j *jobsService) startClientSet(namespaces []string) error {
 		return fmt.Errorf("failed to initialize kubernetes clientSet: %w", err)
 	}
 
+	j.jobInterfaces[""] = j.clientSet.CoreV1().Jobs("")
 	j.podInterfaces[""] = j.clientSet.CoreV1().Pods("")
 	for _, ns := range namespaces {
 		j.podInterfaces[ns] = j.clientSet.CoreV1().Pods(ns)
@@ -446,6 +445,7 @@ func (j *jobsService) getMasterIPAndPort() error {
 }
 
 func (j *jobsService) getSystemResourceRequests() error {
+	// FIXME: use the release namespace instead of j.namespace (from env var?)
 	systemPods, err := j.podInterfaces[j.namespace].List(
 		context.TODO(), metaV1.ListOptions{LabelSelector: determinedSystemLabel})
 	if err != nil {
@@ -1124,10 +1124,9 @@ func (j *jobsService) HealthStatus() model.HealthStatus {
 	}
 
 	_, err := j.podInterfaces[""].List(ctx, metaV1.ListOptions{Limit: 1})
-	if err != nil {
-		if k8error.IsForbidden(err) {
-			return j.healthStatusFallback(ctx)
-		}
+	if k8error.IsForbidden(err) {
+		return j.healthStatusFallback(ctx)
+	} else if err != nil {
 		return model.Unhealthy
 	}
 	return model.Healthy
@@ -2146,17 +2145,60 @@ func numSlots(slots model.SlotsSummary) int {
 func (j *jobsService) listJobsInAllNamespaces(
 	ctx context.Context, opts metaV1.ListOptions,
 ) ([]batchV1.Job, error) {
-	var res []batchV1.Job
-	for n, i := range j.jobInterfaces {
-		pods, err := i.List(ctx, opts)
-		if err != nil {
-			return nil, fmt.Errorf("error listing pods for namespace %s: %w", n, err)
+	allJobs, err := j.jobInterfaces[""].List(ctx, opts)
+	if k8error.IsForbidden(err) {
+		var res []batchV1.Job
+		for n, i := range j.jobInterfaces {
+			pods, err := i.List(ctx, opts)
+			if err != nil {
+				return nil, fmt.Errorf("error listing pods for namespace %s: %w", n, err)
+			}
+
+			res = append(res, pods.Items...)
 		}
 
-		res = append(res, pods.Items...)
+		return res, nil
+	} else if err != nil {
+		logrus.WithError(err).WithField("function", "listJobsInAllNamespaces").Error("error listing jobs in all namespace")
+		return nil, err
 	}
 
-	return res, nil
+	var jobsWeCareAbout []batchV1.Job
+	namespaces := set.FromKeys(j.jobInterfaces)
+	for _, j := range allJobs.Items {
+		if namespaces.Contains(j.Namespace) {
+			jobsWeCareAbout = append(jobsWeCareAbout, j)
+		}
+	}
+
+	return jobsWeCareAbout, nil
+}
+
+func (j *jobsService) listPodsInAllNamespaces(
+	ctx context.Context, opts metaV1.ListOptions,
+) (*k8sV1.PodList, error) {
+	fmt.Println("WE ARE GOING TO LIST PODS IN ALL NAMESPACES \n \n \n ")
+	allPods, err := j.podInterfaces[""].List(ctx, opts)
+	fmt.Println("WE HAVE FINISHED CALL THE LIST FUNCTION \n \n \n ")
+	if k8error.IsForbidden(err) {
+		fmt.Println("WE GO TO IS FORBIDDEN ERROR \n \n \n \n ")
+		return j.listImportantPods(ctx, opts)
+	} else if err != nil {
+		fmt.Println("WE HAVE A DIFFERENT ERROR \n \n \n ")
+		return nil, err
+	}
+
+	var podsWeWant k8sV1.PodList
+	namespaces := set.FromKeys(j.podInterfaces)
+	for _, pod := range allPods.Items {
+		if namespaces.Contains(pod.Namespace) {
+			podsWeWant.Items = append(podsWeWant.Items, pod)
+		}
+	}
+
+	fmt.Println("finished list pods in all namespaces \n \n \n \n ")
+	allPods.Items, podsWeWant.Items = podsWeWant.Items, allPods.Items
+	return allPods, nil
 }
 
 func (j *jobsService) listImportantPods(ctx context.Context, opts metaV1.ListOptions) (*k8sV1.PodList, error) {
@@ -2186,34 +2228,6 @@ func (j *jobsService) listImportantPods(ctx context.Context, opts metaV1.ListOpt
 		return nil, err
 	}
 	return res, nil
-}
-
-func (j *jobsService) listPodsInAllNamespaces(
-	ctx context.Context, opts metaV1.ListOptions,
-) (*k8sV1.PodList, error) {
-	fmt.Println("WE ARE GOING TO LIST PODS IN ALL NAMESPACES \n \n \n ")
-	allPods, err := j.podInterfaces[""].List(ctx, opts)
-	fmt.Println("WE HAVE FINISHED CALL THE LIST FUNCTION \n \n \n ")
-	if err != nil {
-		if k8error.IsForbidden(err) {
-			fmt.Println("WE GO TO IS FORBIDDEN ERROR \n \n \n \n ")
-			return j.listImportantPods(ctx, opts)
-		}
-		fmt.Println("WE HAVE A DIFFERENT ERROR \n \n \n ")
-		return nil, err
-	}
-
-	var podsWeWant k8sV1.PodList
-	namespaces := set.FromKeys(j.podInterfaces)
-	for _, pod := range allPods.Items {
-		if namespaces.Contains(pod.Namespace) {
-			podsWeWant.Items = append(podsWeWant.Items, pod)
-		}
-	}
-
-	fmt.Println("finished list pods in all namespaces \n \n \n \n ")
-	allPods.Items, podsWeWant.Items = podsWeWant.Items, allPods.Items
-	return allPods, nil
 }
 
 func (j *jobsService) listConfigMapsInAllNamespaces(
