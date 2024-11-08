@@ -183,7 +183,7 @@ func (k *ResourceManager) HealthCheck() []model.ResourceManagerHealth {
 	return []model.ResourceManagerHealth{
 		{
 			ClusterName: k.config.ClusterName,
-			Status:      k.jobsService.HealthStatus(),
+			Status:      k.jobsService.HealthStatus(context.TODO()),
 		},
 	}
 }
@@ -275,28 +275,22 @@ func (k *ResourceManager) GetJobQueueStatsRequest(
 
 // GetResourcePools implements rm.ResourceManager.
 func (k *ResourceManager) GetResourcePools() (*apiv1.GetResourcePoolsResponse, error) {
-	fmt.Println("comes to get resource pools \n \n \n \n ")
 	summaries := make([]*resourcepoolv1.ResourcePool, 0, len(k.poolsConfig))
 	for _, pool := range k.poolsConfig {
-		fmt.Println("we are going to create the rp summary \n \n ")
 		summary, err := k.createResourcePoolSummary(pool.PoolName)
-		fmt.Println("finished create rp summary \n \n ")
 		if err != nil {
 			// Should only raise an error if the resource pool doesn't exist and that can't happen.
 			// But best to handle it anyway in case the implementation changes in the future.
 			return nil, err
 		}
-		fmt.Println("Finished create rp summary \n \n \n \n ")
 		jobStats, err := k.getPoolJobStats(pool)
 		if err != nil {
 			return nil, err
 		}
-		fmt.Println("Finished get pool job stats \n \n \n \n ")
 
 		summary.Stats = jobStats
 		summaries = append(summaries, summary)
 	}
-	fmt.Println("about to return from get rps \n \n \n \n ")
 	return &apiv1.GetResourcePoolsResponse{ResourcePools: summaries}, nil
 }
 

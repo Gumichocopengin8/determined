@@ -134,7 +134,7 @@ func TestListPodsInAllNamespaces(t *testing.T) {
 	actualPodList, err := js.listPodsInAllNamespaces(ctx, opts)
 	require.NoError(t, err)
 	require.NotNil(t, actualPodList)
-	require.ElementsMatch(t, expectedPodList.Items, actualPodList.Items)
+	require.ElementsMatch(t, expectedPodList.Items, actualPodList)
 
 	forbiddenErr := k8error.NewForbidden(schema.GroupResource{}, "forbidden",
 		fmt.Errorf("forbidden"))
@@ -151,7 +151,7 @@ func TestListPodsInAllNamespaces(t *testing.T) {
 	actualPodList, err = js.listPodsInAllNamespaces(ctx, opts)
 	require.NoError(t, err)
 	require.NotNil(t, actualPodList)
-	require.ElementsMatch(t, detPods, actualPodList.Items)
+	require.ElementsMatch(t, detPods, actualPodList)
 
 	listErr := fmt.Errorf("something bad happened")
 	ns2.On("List", mock.Anything, mock.Anything).Once().
@@ -209,13 +209,13 @@ func TestHealthStatus(t *testing.T) {
 	emptyNS.On("List", mock.Anything, mock.Anything).Once().
 		Return(&k8sV1.PodList{Items: expectedPods}, nil)
 
-	health := js.HealthStatus()
+	health := js.HealthStatus(context.TODO())
 	require.Equal(t, model.Healthy, health)
 
 	emptyNS.On("List", mock.Anything, mock.Anything).Once().
 		Return(nil, fmt.Errorf("couldnt list all pods"))
 
-	health = js.HealthStatus()
+	health = js.HealthStatus(context.TODO())
 	require.Equal(t, model.Unhealthy, health)
 
 	forbiddenErr := k8error.NewForbidden(schema.GroupResource{}, "forbidden",
@@ -230,12 +230,12 @@ func TestHealthStatus(t *testing.T) {
 	ns2.On("List", mock.Anything, mock.Anything).Once().
 		Return(&k8sV1.PodList{Items: []k8sV1.Pod{detPods[1]}}, nil)
 
-	health = js.HealthStatus()
+	health = js.HealthStatus(context.TODO())
 	require.Equal(t, model.Healthy, health)
 
 	ns2.On("List", mock.Anything, mock.Anything).Once().
 		Return(nil, fmt.Errorf("couldnt list pods in namespace ns2"))
-	health = js.HealthStatus()
+	health = js.HealthStatus(context.TODO())
 	require.Equal(t, model.Unhealthy, health)
 }
 

@@ -292,7 +292,6 @@ func (k *kubernetesResourcePool) Admit() {
 }
 
 func (k *kubernetesResourcePool) summarizePods() (*computeUsageSummary, error) {
-	fmt.Println("comes to summarize pods \n \n \n \n ")
 	resp, err := k.jobsService.SummarizeResources(k.poolConfig.PoolName)
 	if err != nil {
 		return nil, err

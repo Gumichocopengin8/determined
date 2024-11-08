@@ -70,8 +70,6 @@ const (
 	ReleaseNamespaceEnvVar = "DET_RELEASE_NAMESPACE"
 	// ResourceTypeNvidia describes the GPU resource type.
 	ResourceTypeNvidia = "nvidia.com/gpu"
-	// DefaultClientBurst is the default Kubernetes burst limit for the k8s Go client.
-	DefaultClientBurst = 10
 )
 
 var cacheSyncs []cache.InformerSynced
@@ -114,13 +112,15 @@ type jobsService struct {
 	internalTaskGWConfig *config.InternalTaskGatewayConfig
 
 	// System dependencies. Also set in initialization and never modified after.
-	syslog              *logrus.Entry
-	clientSet           k8sClient.Interface
+	syslog    *logrus.Entry
+	clientSet k8sClient.Interface
+	// TODO(!!!): Not set in initialization and never changed anymore.. RIP.
 	podInterfaces       map[string]typedV1.PodInterface
 	configMapInterfaces map[string]typedV1.ConfigMapInterface
 	jobInterfaces       map[string]typedBatchV1.JobInterface
 	serviceInterfaces   map[string]typedV1.ServiceInterface
 	tcpRouteInterfaces  map[string]alphaGateway.TCPRouteInterface
+	// TODO(!!!): end.
 
 	resourceRequestQueue       *requestQueue
 	requestQueueWorkers        []*requestProcessingWorker
@@ -254,6 +254,7 @@ func newJobsService(
 }
 
 func (j *jobsService) syncNamespaces(ns []string, hasJSLock bool) error {
+	// TODO(!!!): Prob one informer per cluster too.
 	for _, namespace := range ns {
 		// Since we don't want to do duplicate namespace informers, don't start any
 		// listeners or informers that have already been added to namespacesWithInformers.
@@ -349,7 +350,7 @@ func (j *jobsService) startClientSet(namespaces []string) error {
 		return fmt.Errorf("failed to initialize kubernetes clientSet: %w", err)
 	}
 
-	j.jobInterfaces[""] = j.clientSet.CoreV1().Jobs("")
+	j.jobInterfaces[""] = j.clientSet.BatchV1().Jobs("")
 	j.podInterfaces[""] = j.clientSet.CoreV1().Pods("")
 	for _, ns := range namespaces {
 		j.podInterfaces[ns] = j.clientSet.CoreV1().Pods(ns)
@@ -401,8 +402,12 @@ func readClientConfig(kubeconfigPath string) (*rest.Config, error) {
 		if err != nil {
 			return nil, err
 		}
-		c.QPS = 100
-		c.Burst = 100
+		if c.QPS == 0.0 {
+			c.QPS = 20
+		}
+		if c.Burst == 0 {
+			c.Burst = 100
+		}
 		return c, nil
 	}
 
@@ -445,7 +450,6 @@ func (j *jobsService) getMasterIPAndPort() error {
 }
 
 func (j *jobsService) getSystemResourceRequests() error {
-	// FIXME: use the release namespace instead of j.namespace (from env var?)
 	systemPods, err := j.podInterfaces[j.namespace].List(
 		context.TODO(), metaV1.ListOptions{LabelSelector: determinedSystemLabel})
 	if err != nil {
@@ -1047,7 +1051,7 @@ func (j *jobsService) refreshPodStates(allocationID model.AllocationID) error {
 		return fmt.Errorf("failed to get namespaces for resource manager: %w", err)
 	}
 
-	for _, pod := range pods.Items {
+	for _, pod := range pods {
 		if !slices.Contains(ns, pod.Namespace) {
 			continue
 		}
@@ -1092,32 +1096,7 @@ func (j *jobsService) GetSlot(msg *apiv1.GetSlotRequest) *apiv1.GetSlotResponse 
 	return j.getSlot(msg.AgentId, msg.SlotId)
 }
 
-func (j *jobsService) healthStatusFallback(ctx context.Context) model.HealthStatus {
-	g := errgroup.Group{}
-	for n, podInterface := range j.podInterfaces {
-		if len(n) == 0 {
-			continue
-		}
-		g.Go(func() error {
-			time.Sleep(time.Duration(200 * time.Millisecond))
-			_, err := podInterface.List(ctx, metaV1.ListOptions{Limit: 1})
-			if err != nil {
-				return err
-			}
-			return nil
-		})
-	}
-	err := g.Wait()
-	if err != nil {
-		return model.Unhealthy
-	}
-	return model.Healthy
-}
-
-func (j *jobsService) HealthStatus() model.HealthStatus {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	ctx := context.TODO()
+func (j *jobsService) HealthStatus(ctx context.Context) model.HealthStatus {
 	if len(j.podInterfaces) == 0 {
 		logrus.Error("expected podInterface to be non empty")
 		return model.Unhealthy
@@ -1127,6 +1106,27 @@ func (j *jobsService) HealthStatus() model.HealthStatus {
 	if k8error.IsForbidden(err) {
 		return j.healthStatusFallback(ctx)
 	} else if err != nil {
+		return model.Unhealthy
+	}
+	return model.Healthy
+}
+
+func (j *jobsService) healthStatusFallback(ctx context.Context) model.HealthStatus {
+	var g errgroup.Group
+	for n, podInterface := range j.podInterfaces {
+		if len(n) == 0 { // TODO: We store a non-namespaced client with key "".
+			continue
+		}
+		g.Go(func() error {
+			_, err := podInterface.List(ctx, metaV1.ListOptions{Limit: 1})
+			if err != nil {
+				return err
+			}
+			return nil
+		})
+	}
+	err := g.Wait()
+	if err != nil {
 		return model.Unhealthy
 	}
 	return model.Healthy
@@ -1513,7 +1513,7 @@ func (j *jobsService) releaseAllocationsOnDisabledNode(nodeName string) error {
 	}
 
 	notifiedAllocations := make(map[model.AllocationID]bool)
-	for _, pod := range pods.Items {
+	for _, pod := range pods {
 		jobName, ok := pod.Labels[kubernetesJobNameLabel]
 		if !ok {
 			j.syslog.Debugf("found pod when disabling node without %s label", kubernetesJobNameLabel)
@@ -1606,9 +1606,7 @@ type computeUsageSummary struct {
 	slotsAvailable int
 }
 
-// TODO(!!!): good func comment.
 func (j *jobsService) summarizeComputeUsage(poolName string) (*computeUsageSummary, error) {
-	fmt.Println("in summarize compute usage \n \n \n \n ")
 	summary, err := j.summarize()
 	if err != nil {
 		return nil, err
@@ -1745,7 +1743,6 @@ func (j *jobsService) getAgents() (*apiv1.GetAgentsResponse, error) {
 		j.getAgentsCacheTime = time.Now()
 
 		nodeSummaries := j.summarizeClusterByNodes()
-		fmt.Println("exited summarize cluster by nodes \n \n \n ")
 		_, nodesToPools := j.getNodeResourcePoolMapping(nodeSummaries)
 
 		j.getAgentsCache = &apiv1.GetAgentsResponse{}
@@ -1755,7 +1752,6 @@ func (j *jobsService) getAgents() (*apiv1.GetAgentsResponse, error) {
 		}
 	}
 
-	fmt.Println("almost done with get agents \n \n \n \n ")
 	// Ensure cached response is not inadvertently modified.
 	return rm.CopyGetAgentsResponse(j.getAgentsCache)
 }
@@ -1781,7 +1777,6 @@ const summarizeCacheDuration = 5 * time.Second
 // taints and tolerations to derive that info. This may be cached, so don't use this for decisions
 // that require up-to-date information.
 func (j *jobsService) summarize() (map[string]model.AgentSummary, error) {
-	fmt.Println("in summarize \n \n \n \n \n ")
 	j.summarizeCacheLock.Lock()
 	defer j.summarizeCacheLock.Unlock()
 
@@ -1870,7 +1865,6 @@ func (j *jobsService) getNodeResourcePoolMapping(nodeSummaries map[string]model.
 var programStartTime = time.Now()
 
 func (j *jobsService) computeSummary() (map[string]model.AgentSummary, error) {
-	fmt.Println("in compute summary \n \n \n \n ")
 	nodeSummaries := j.summarizeClusterByNodes()
 
 	// Build the many-to-many relationship between nodes and resource pools
@@ -1924,7 +1918,6 @@ func (j *jobsService) computeSummary() (map[string]model.AgentSummary, error) {
 }
 
 func (j *jobsService) summarizeClusterByNodes() map[string]model.AgentSummary {
-	fmt.Println("in summarize cluster by nodes \n \n \n \n ")
 	var allPods []podNodeInfo
 
 	for _, p := range j.jobNameToJobHandler {
@@ -1941,9 +1934,7 @@ func (j *jobsService) summarizeClusterByNodes() map[string]model.AgentSummary {
 		}
 		podByNode[podInfo.nodeName] = append(podByNode[podInfo.nodeName], podInfo)
 	}
-	fmt.Println("about to call get nonDet Slots \n \n \n ")
 	nodeToTasks, taskSlots := j.getNonDetSlots(j.slotType)
-	fmt.Println("exited get nondet slots \n \n \n \n ")
 	summary := make(map[string]model.AgentSummary, len(j.currentNodes))
 	for _, node := range j.currentNodes {
 		disabledLabel, isDisabled := node.Labels[clusterIDNodeLabel()]
@@ -2043,7 +2034,6 @@ func (j *jobsService) summarizeClusterByNodes() map[string]model.AgentSummary {
 		}
 	}
 
-	fmt.Println("we are returning from summarize cluster by nodes \n \n \n \n ")
 	return summary
 }
 
@@ -2057,7 +2047,7 @@ func (j *jobsService) getNonDetPods() ([]k8sV1.Pod, error) {
 	}
 
 	var nonDetPods []k8sV1.Pod
-	for _, p := range allPods.Items {
+	for _, p := range allPods {
 		_, isDet := p.Labels[determinedLabel]
 		_, isDetSystem := p.Labels[determinedSystemLabel]
 
@@ -2073,9 +2063,7 @@ func (j *jobsService) getNonDetPods() ([]k8sV1.Pod, error) {
 func (j *jobsService) getNonDetSlots(deviceType device.Type) (map[string][]string, map[string]int64) {
 	nodeToTasks := make(map[string][]string, len(j.currentNodes))
 	taskSlots := make(map[string]int64)
-	fmt.Println("about to call get nondet pods \n \n \n ")
 	nonDetPods, err := j.getNonDetPods()
-	fmt.Println("finished get nondet pods \n \n \n \n ")
 	if err != nil {
 		j.syslog.WithError(err).Warn("getting non determined pods, " +
 			"this may cause slots to look free when they are in use")
@@ -2106,7 +2094,6 @@ func (j *jobsService) getNonDetSlots(deviceType device.Type) (map[string][]strin
 			taskSlots[pod.Name] = reqs
 		}
 	}
-	fmt.Println("finished get nondet slots \n \n \n \n ")
 	return nodeToTasks, taskSlots
 }
 
@@ -2147,81 +2134,89 @@ func (j *jobsService) listJobsInAllNamespaces(
 ) ([]batchV1.Job, error) {
 	allJobs, err := j.jobInterfaces[""].List(ctx, opts)
 	if k8error.IsForbidden(err) {
-		var res []batchV1.Job
-		for n, i := range j.jobInterfaces {
-			pods, err := i.List(ctx, opts)
-			if err != nil {
-				return nil, fmt.Errorf("error listing pods for namespace %s: %w", n, err)
-			}
-
-			res = append(res, pods.Items...)
-		}
-
-		return res, nil
+		return j.listJobsInAllNamespacesFallback(ctx, opts)
 	} else if err != nil {
 		logrus.WithError(err).WithField("function", "listJobsInAllNamespaces").Error("error listing jobs in all namespace")
 		return nil, err
 	}
 
-	var jobsWeCareAbout []batchV1.Job
 	namespaces := set.FromKeys(j.jobInterfaces)
+	var jobsWeCareAbout []batchV1.Job
 	for _, j := range allJobs.Items {
 		if namespaces.Contains(j.Namespace) {
 			jobsWeCareAbout = append(jobsWeCareAbout, j)
 		}
 	}
-
 	return jobsWeCareAbout, nil
+}
+
+func (j *jobsService) listJobsInAllNamespacesFallback(
+	ctx context.Context,
+	opts metaV1.ListOptions,
+) ([]batchV1.Job, error) {
+	var g errgroup.Group
+	var res []batchV1.Job
+	var resLock sync.Mutex
+	for n, i := range j.jobInterfaces {
+		g.Go(func() error {
+			pods, err := i.List(ctx, opts)
+			if err != nil {
+				return fmt.Errorf("error listing pods for namespace %s: %w", n, err)
+			}
+			resLock.Lock()
+			res = append(res, pods.Items...)
+			resLock.Unlock()
+			return nil
+		})
+	}
+	err := g.Wait()
+	if err != nil {
+		return nil, err
+	}
+	return res, nil
 }
 
 func (j *jobsService) listPodsInAllNamespaces(
 	ctx context.Context, opts metaV1.ListOptions,
-) (*k8sV1.PodList, error) {
-	fmt.Println("WE ARE GOING TO LIST PODS IN ALL NAMESPACES \n \n \n ")
+) ([]k8sV1.Pod, error) {
 	allPods, err := j.podInterfaces[""].List(ctx, opts)
-	fmt.Println("WE HAVE FINISHED CALL THE LIST FUNCTION \n \n \n ")
 	if k8error.IsForbidden(err) {
-		fmt.Println("WE GO TO IS FORBIDDEN ERROR \n \n \n \n ")
-		return j.listImportantPods(ctx, opts)
+		return j.listPodsInAllNamespacesFallback(ctx, opts)
 	} else if err != nil {
-		fmt.Println("WE HAVE A DIFFERENT ERROR \n \n \n ")
 		return nil, err
 	}
 
-	var podsWeWant k8sV1.PodList
 	namespaces := set.FromKeys(j.podInterfaces)
+	var podsWeWant []k8sV1.Pod
 	for _, pod := range allPods.Items {
 		if namespaces.Contains(pod.Namespace) {
-			podsWeWant.Items = append(podsWeWant.Items, pod)
+			podsWeWant = append(podsWeWant, pod)
 		}
 	}
-
-	fmt.Println("finished list pods in all namespaces \n \n \n \n ")
-	allPods.Items, podsWeWant.Items = podsWeWant.Items, allPods.Items
-	return allPods, nil
+	return podsWeWant, nil
 }
 
-func (j *jobsService) listImportantPods(ctx context.Context, opts metaV1.ListOptions) (*k8sV1.PodList, error) {
-	resLock := sync.Mutex{}
-	res := &k8sV1.PodList{}
-	g := errgroup.Group{}
-	// cnt := 0
+func (j *jobsService) listPodsInAllNamespacesFallback(
+	ctx context.Context,
+	opts metaV1.ListOptions,
+) ([]k8sV1.Pod, error) {
+	var g errgroup.Group
+	var res []k8sV1.Pod
+	var resLock sync.Mutex
 	for n, podInterface := range j.podInterfaces {
 		if len(n) == 0 {
 			continue
 		}
 		g.Go(func() error {
-			// time.Sleep(time.Duration(cnt/DefaultClientBurst) * 1050 * time.Millisecond)
 			pods, err := podInterface.List(ctx, opts)
 			if err != nil {
 				return fmt.Errorf("error listing pods for namespace %s: %w", n, err)
 			}
 			resLock.Lock()
-			res.Items = append(res.Items, pods.Items...)
+			res = append(res, pods.Items...)
 			resLock.Unlock()
 			return nil
 		})
-		// cnt++
 	}
 	err := g.Wait()
 	if err != nil {
